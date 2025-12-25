@@ -3,7 +3,7 @@
  * Plugin Name: MCP Abilities - Filesystem
  * Plugin URI: https://github.com/bjornfix/mcp-abilities-filesystem
  * Description: Filesystem abilities for MCP. Read, write, copy, move, and delete files within WordPress. Security-hardened with PHP injection detection.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Devenia
  * Author URI: https://devenia.com
  * License: GPL-2.0+
@@ -99,6 +99,13 @@ function mcp_register_filesystem_abilities(): void {
 			return;
 		}
 
+		// Initialize WP_Filesystem.
+		global $wp_filesystem;
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		WP_Filesystem();
+
 		$cutoff = strtotime( '-7 days' );
 		$dirs   = glob( $backup_base . '/20*-*-*', GLOB_ONLYDIR );
 
@@ -110,10 +117,10 @@ function mcp_register_filesystem_abilities(): void {
 				$files = glob( $dir . '/*' );
 				foreach ( $files as $file ) {
 					if ( is_file( $file ) ) {
-						unlink( $file );
+						wp_delete_file( $file );
 					}
 				}
-				rmdir( $dir );
+				$wp_filesystem->rmdir( $dir );
 			}
 		}
 	};
@@ -133,7 +140,7 @@ function mcp_register_filesystem_abilities(): void {
 		$user    = wp_get_current_user();
 		$user_id = $user->ID ?? 0;
 		$email   = $user->user_email ?? 'unknown';
-		$ip      = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+		$ip      = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
 
 		$entry = "[{$timestamp}] {$operation}\n";
 		$entry .= "  File: {$path}\n";
@@ -456,14 +463,21 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				if ( ! is_readable( $full_path ) ) {
+				// Initialize WP_Filesystem.
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				if ( ! $wp_filesystem->is_readable( $full_path ) ) {
 					return array(
 						'success' => false,
 						'message' => 'File is not readable: ' . $input['path'],
 					);
 				}
 
-				$content = file_get_contents( $full_path );
+				$content = $wp_filesystem->get_contents( $full_path );
 
 				if ( false === $content ) {
 					return array(
@@ -1059,7 +1073,8 @@ function mcp_register_filesystem_abilities(): void {
 					}
 				}
 
-				if ( ! unlink( $full_path ) ) {
+				wp_delete_file( $full_path );
+				if ( file_exists( $full_path ) ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to delete file.',
@@ -1169,6 +1184,13 @@ function mcp_register_filesystem_abilities(): void {
 
 				$stat = stat( $full_path );
 
+				// Initialize WP_Filesystem for permission checks.
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
 				return array(
 					'success'     => true,
 					'path'        => $full_path,
@@ -1180,8 +1202,8 @@ function mcp_register_filesystem_abilities(): void {
 					'created'     => gmdate( 'Y-m-d H:i:s', $stat['ctime'] ),
 					'modified'    => gmdate( 'Y-m-d H:i:s', $stat['mtime'] ),
 					'accessed'    => gmdate( 'Y-m-d H:i:s', $stat['atime'] ),
-					'readable'    => is_readable( $full_path ),
-					'writable'    => is_writable( $full_path ),
+					'readable'    => $wp_filesystem->is_readable( $full_path ),
+					'writable'    => $wp_filesystem->is_writable( $full_path ),
 				);
 			},
 			'permission_callback' => function (): bool {
@@ -1278,11 +1300,24 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				if ( ! mkdir( $full_path, $permissions, $recursive ) ) {
+				// Initialize WP_Filesystem.
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				$created = $recursive ? wp_mkdir_p( $full_path ) : $wp_filesystem->mkdir( $full_path, $permissions );
+				if ( ! $created ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to create directory.',
 					);
+				}
+
+				// Apply custom permissions if different from default.
+				if ( $permissions !== 0755 ) {
+					$wp_filesystem->chmod( $full_path, $permissions );
 				}
 
 				return array(
@@ -1573,7 +1608,14 @@ function mcp_register_filesystem_abilities(): void {
 					$dest_backup_path = $mcp_create_backup( $final_dest );
 				}
 
-				if ( ! rename( $source_path, $final_dest ) ) {
+				// Initialize WP_Filesystem.
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				if ( ! $wp_filesystem->move( $source_path, $final_dest, $overwrite ) ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to move file.',
