@@ -5,8 +5,8 @@ Secure file operations for WordPress via MCP.
 [![GitHub release](https://img.shields.io/github/v/release/bjornfix/mcp-abilities-filesystem)](https://github.com/bjornfix/mcp-abilities-filesystem/releases)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 
-**Tested up to:** 6.7
-**Stable tag:** 1.0.1
+**Tested up to:** 6.9
+**Stable tag:** 1.0.2
 **License:** GPLv2 or later
 **License URI:** https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -102,9 +102,19 @@ This plugin includes extensive security hardening:
 - **PHP Injection Detection** - Blocks `<?php`, `<?=`, and obfuscated PHP patterns
 - **Encoding Bypass Protection** - Detects UTF-7, UTF-16, and Base64 encoded PHP
 - **Path Traversal Protection** - Blocks `../` and absolute paths outside WordPress
-- **Directory Restrictions** - Limited to `wp-content/` by default
+- **Directory Restrictions** - Limited to the WordPress root directory
 - **Automatic Backups** - Files backed up before deletion
 - **50+ Attack Vectors Tested** - Comprehensive security testing
+
+## Changelog
+
+### 1.0.2
+- Security: Restrict filesystem operations to the WordPress root directory
+- Fixed: Use WP_Filesystem for backups and copy operations
+
+### 1.0.1
+- Fixed: Use WP_Filesystem API instead of native PHP functions
+- Fixed: Proper sanitization of REMOTE_ADDR
 
 ## License
 

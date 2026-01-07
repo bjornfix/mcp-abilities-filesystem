@@ -3,7 +3,7 @@
  * Plugin Name: MCP Abilities - Filesystem
  * Plugin URI: https://github.com/bjornfix/mcp-abilities-filesystem
  * Description: Filesystem abilities for MCP. Read, write, copy, move, and delete files within WordPress. Security-hardened with PHP injection detection.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: Devenia
  * Author URI: https://devenia.com
  * License: GPL-2.0+
@@ -71,6 +71,12 @@ function mcp_register_filesystem_abilities(): void {
 			return false;
 		}
 
+		global $wp_filesystem;
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		WP_Filesystem();
+
 		$backup_dir  = $mcp_get_backup_dir();
 		$filename    = basename( $source_path );
 		$backup_name = $filename . '.bak.' . gmdate( 'His' );
@@ -83,7 +89,7 @@ function mcp_register_filesystem_abilities(): void {
 			$counter++;
 		}
 
-		if ( copy( $source_path, $backup_path ) ) {
+		if ( $wp_filesystem->copy( $source_path, $backup_path, true, FS_CHMOD_FILE ) ) {
 			return $backup_path;
 		}
 
@@ -163,7 +169,14 @@ function mcp_register_filesystem_abilities(): void {
 		$entry .= "\n";
 
 		// Append to log file (create if doesn't exist).
-		file_put_contents( $log_file, $entry, FILE_APPEND | LOCK_EX );
+		global $wp_filesystem;
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		WP_Filesystem();
+
+		$existing_log = $wp_filesystem->exists( $log_file ) ? $wp_filesystem->get_contents( $log_file ) : '';
+		$wp_filesystem->put_contents( $log_file, $existing_log . $entry, FS_CHMOD_FILE );
 
 		// Cleanup old backups occasionally (1 in 10 chance to avoid overhead).
 		if ( wp_rand( 1, 10 ) === 1 ) {
@@ -324,6 +337,30 @@ function mcp_register_filesystem_abilities(): void {
 		return false;
 	};
 
+	/**
+	 * Normalize the WordPress root path for prefix checks.
+	 *
+	 * @return string Normalized absolute root with trailing slash.
+	 */
+	$mcp_get_wp_root = function (): string {
+		$root = realpath( ABSPATH );
+		if ( false === $root ) {
+			$root = ABSPATH;
+		}
+		return rtrim( wp_normalize_path( $root ), '/' ) . '/';
+	};
+
+	/**
+	 * Check if a path is within the WordPress root directory.
+	 *
+	 * @param string $path Absolute path to validate.
+	 * @return bool True if inside WordPress root.
+	 */
+	$mcp_is_path_in_wp_root = function ( string $path ) use ( $mcp_get_wp_root ): bool {
+		$path = wp_normalize_path( $path );
+		return strpos( $path, $mcp_get_wp_root() ) === 0;
+	};
+
 	// =========================================================================
 	// FILESYSTEM - Get Changelog
 	// =========================================================================
@@ -366,7 +403,13 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$content = file_get_contents( $log_file );
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				$content = $wp_filesystem->get_contents( $log_file );
 				if ( false === $content ) {
 					return array(
 						'success' => false,
@@ -423,7 +466,7 @@ function mcp_register_filesystem_abilities(): void {
 					'message'  => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
 				$path = $input['path'] ?? '';
 
 				if ( empty( $path ) ) {
@@ -448,11 +491,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $full_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied. File must be within the WordPress installation directory.',
+						'message' => 'Access denied. File must be within the WordPress root directory.',
 					);
 				}
 
@@ -550,7 +592,7 @@ function mcp_register_filesystem_abilities(): void {
 					'bytes'       => array( 'type' => 'integer' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security, $mcp_is_path_in_wp_root ): array {
 				$path    = $input['path'] ?? '';
 				$content = $input['content'] ?? '';
 				$backup  = $input['backup'] ?? true;
@@ -579,11 +621,10 @@ function mcp_register_filesystem_abilities(): void {
 
 				$real_dir = realpath( $dir );
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $real_dir, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $real_dir ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied. File must be within the WordPress installation directory.',
+						'message' => 'Access denied. File must be within the WordPress root directory.',
 					);
 				}
 
@@ -617,9 +658,15 @@ function mcp_register_filesystem_abilities(): void {
 					}
 				}
 
-				$bytes = file_put_contents( $full_path_normalized, $content );
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
 
-				if ( false === $bytes ) {
+				$written = $wp_filesystem->put_contents( $full_path_normalized, $content, FS_CHMOD_FILE );
+
+				if ( ! $written ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to write file: ' . $path,
@@ -629,7 +676,7 @@ function mcp_register_filesystem_abilities(): void {
 				$mcp_log_filesystem_operation( 'WRITE', $full_path_normalized, array(
 					'backup'      => $backup_path,
 					'size_before' => $size_before,
-					'size_after'  => $bytes,
+					'size_after'  => strlen( $content ),
 					'context'     => $context,
 				) );
 
@@ -637,7 +684,7 @@ function mcp_register_filesystem_abilities(): void {
 					'success' => true,
 					'message' => 'File written successfully.',
 					'path'    => $full_path_normalized,
-					'bytes'   => $bytes,
+					'bytes'   => strlen( $content ),
 				);
 
 				if ( $backup_path ) {
@@ -707,7 +754,7 @@ function mcp_register_filesystem_abilities(): void {
 					'bytes'       => array( 'type' => 'integer' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security, $mcp_is_path_in_wp_root ): array {
 				$path    = $input['path'] ?? '';
 				$content = $input['content'] ?? '';
 				$prepend = $input['prepend'] ?? false;
@@ -736,11 +783,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $full_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied.',
+						'message' => 'Access denied. File must be within the WordPress root directory.',
 					);
 				}
 
@@ -773,14 +819,24 @@ function mcp_register_filesystem_abilities(): void {
 					}
 				}
 
-				if ( $prepend ) {
-					$existing = file_get_contents( $full_path );
-					$bytes    = file_put_contents( $full_path, $content . $existing );
-				} else {
-					$bytes = file_put_contents( $full_path, $content, FILE_APPEND );
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				$existing = $wp_filesystem->get_contents( $full_path );
+				if ( false === $existing ) {
+					return array(
+						'success' => false,
+						'message' => 'Failed to read file before append.',
+					);
 				}
 
-				if ( false === $bytes ) {
+				$new_content = $prepend ? $content . $existing : $existing . $content;
+				$written     = $wp_filesystem->put_contents( $full_path, $new_content, FS_CHMOD_FILE );
+
+				if ( ! $written ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to append to file.',
@@ -788,6 +844,7 @@ function mcp_register_filesystem_abilities(): void {
 				}
 
 				$size_after = filesize( $full_path );
+				$bytes      = max( 0, $size_after - $size_before );
 
 				$mcp_log_filesystem_operation( 'APPEND', $full_path, array(
 					'backup'      => $backup_path,
@@ -873,7 +930,7 @@ function mcp_register_filesystem_abilities(): void {
 					'message' => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
 				$path      = $input['path'] ?? '.';
 				$recursive = $input['recursive'] ?? false;
 				$pattern   = $input['pattern'] ?? null;
@@ -895,11 +952,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $full_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied.',
+						'message' => 'Access denied. Directory must be within the WordPress root directory.',
 					);
 				}
 
@@ -1002,7 +1058,7 @@ function mcp_register_filesystem_abilities(): void {
 					'backup_path' => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_is_path_in_wp_root ): array {
 				$path    = $input['path'] ?? '';
 				$backup  = $input['backup'] ?? true;
 				$context = $input['context'] ?? '';
@@ -1029,11 +1085,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $full_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied.',
+						'message' => 'Access denied. File must be within the WordPress root directory.',
 					);
 				}
 
@@ -1149,7 +1204,7 @@ function mcp_register_filesystem_abilities(): void {
 					'message'     => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
 				$path = $input['path'] ?? '';
 
 				if ( empty( $path ) ) {
@@ -1174,11 +1229,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $full_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied.',
+						'message' => 'Access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
@@ -1285,11 +1339,17 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( $real_parent && strpos( $real_parent, $allowed_base ) !== 0 ) {
+				if ( $real_parent && ! $mcp_is_path_in_wp_root( $real_parent ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Access denied.',
+						'message' => 'Access denied. Path must be within the WordPress root directory.',
+					);
+				}
+
+				if ( ! $real_parent && ! $mcp_is_path_in_wp_root( $full_path ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
@@ -1382,7 +1442,7 @@ function mcp_register_filesystem_abilities(): void {
 					'backup_path' => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security, $mcp_is_path_in_wp_root ): array {
 				$source    = $input['source'] ?? '';
 				$dest      = $input['dest'] ?? '';
 				$overwrite = $input['overwrite'] ?? false;
@@ -1407,19 +1467,18 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $source_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $source_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Source access denied.',
+						'message' => 'Source access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
 				$dest_dir = realpath( dirname( $dest_path ) );
-				if ( false === $dest_dir || strpos( $dest_dir, $allowed_base ) !== 0 ) {
+				if ( false === $dest_dir || ! $mcp_is_path_in_wp_root( $dest_dir ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Destination access denied.',
+						'message' => 'Destination access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
@@ -1445,7 +1504,14 @@ function mcp_register_filesystem_abilities(): void {
 					$backup_path = $mcp_create_backup( $final_dest );
 				}
 
-				if ( ! copy( $source_path, $final_dest ) ) {
+				// Initialize WP_Filesystem.
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				if ( ! $wp_filesystem->copy( $source_path, $final_dest, $overwrite, FS_CHMOD_FILE ) ) {
 					return array(
 						'success' => false,
 						'message' => 'Failed to copy file.',
@@ -1528,7 +1594,7 @@ function mcp_register_filesystem_abilities(): void {
 					'dest_backup_path'   => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security ): array {
+			'execute_callback'    => function ( array $input ) use ( $mcp_create_backup, $mcp_log_filesystem_operation, $mcp_check_write_security, $mcp_is_path_in_wp_root ): array {
 				$source    = $input['source'] ?? '';
 				$dest      = $input['dest'] ?? '';
 				$overwrite = $input['overwrite'] ?? false;
@@ -1553,11 +1619,10 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$allowed_base = dirname( ABSPATH );
-				if ( strpos( $source_path, $allowed_base ) !== 0 ) {
+				if ( ! $mcp_is_path_in_wp_root( $source_path ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Source access denied.',
+						'message' => 'Source access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
@@ -1570,10 +1635,10 @@ function mcp_register_filesystem_abilities(): void {
 				}
 
 				$dest_dir = realpath( dirname( $dest_path ) );
-				if ( false === $dest_dir || strpos( $dest_dir, $allowed_base ) !== 0 ) {
+				if ( false === $dest_dir || ! $mcp_is_path_in_wp_root( $dest_dir ) ) {
 					return array(
 						'success' => false,
-						'message' => 'Destination access denied.',
+						'message' => 'Destination access denied. Path must be within the WordPress root directory.',
 					);
 				}
 
