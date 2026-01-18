@@ -3,7 +3,7 @@
  * Plugin Name: MCP Abilities - Filesystem
  * Plugin URI: https://github.com/bjornfix/mcp-abilities-filesystem
  * Description: Filesystem abilities for MCP. Read, write, copy, move, and delete files within WordPress. Security-hardened with PHP injection detection.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Devenia
  * Author URI: https://devenia.com
  * License: GPL-2.0+
@@ -169,14 +169,17 @@ function mcp_register_filesystem_abilities(): void {
 		$entry .= "\n";
 
 		// Append to log file (create if doesn't exist).
-		global $wp_filesystem;
-		if ( ! function_exists( 'WP_Filesystem' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/file.php';
-		}
-		WP_Filesystem();
+		$append_result = @file_put_contents( $log_file, $entry, FILE_APPEND | LOCK_EX );
+		if ( false === $append_result ) {
+			global $wp_filesystem;
+			if ( ! function_exists( 'WP_Filesystem' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/file.php';
+			}
+			WP_Filesystem();
 
-		$existing_log = $wp_filesystem->exists( $log_file ) ? $wp_filesystem->get_contents( $log_file ) : '';
-		$wp_filesystem->put_contents( $log_file, $existing_log . $entry, FS_CHMOD_FILE );
+			$existing_log = $wp_filesystem->exists( $log_file ) ? $wp_filesystem->get_contents( $log_file ) : '';
+			$wp_filesystem->put_contents( $log_file, $existing_log . $entry, FS_CHMOD_FILE );
+		}
 
 		// Cleanup old backups occasionally (1 in 10 chance to avoid overhead).
 		if ( wp_rand( 1, 10 ) === 1 ) {
@@ -901,6 +904,10 @@ function mcp_register_filesystem_abilities(): void {
 						'default'     => false,
 						'description' => 'Include subdirectories recursively (max 2 levels deep).',
 					),
+					'max_depth' => array(
+						'type'        => 'integer',
+						'description' => 'Max recursion depth when recursive is true (default 2, max 8).',
+					),
 					'pattern'   => array(
 						'type'        => 'string',
 						'description' => 'Filter files by pattern (e.g., "*.php", "*.js").',
@@ -934,6 +941,8 @@ function mcp_register_filesystem_abilities(): void {
 				$path      = $input['path'] ?? '.';
 				$recursive = $input['recursive'] ?? false;
 				$pattern   = $input['pattern'] ?? null;
+				$max_depth = isset( $input['max_depth'] ) ? (int) $input['max_depth'] : 2;
+				$max_depth = max( 1, min( 8, $max_depth ) );
 
 				if ( '.' === $path || empty( $path ) ) {
 					$full_path = ABSPATH;
@@ -968,8 +977,8 @@ function mcp_register_filesystem_abilities(): void {
 
 				$items = array();
 
-				$list_dir = function ( $dir, $depth = 0 ) use ( &$list_dir, &$items, $recursive, $pattern ) {
-					if ( $depth > 2 ) {
+				$list_dir = function ( $dir, $depth = 0 ) use ( &$list_dir, &$items, $recursive, $pattern, $max_depth ) {
+					if ( $depth > $max_depth ) {
 						return;
 					}
 
@@ -1152,6 +1161,125 @@ function mcp_register_filesystem_abilities(): void {
 				}
 
 				return $result;
+			},
+			'permission_callback' => function (): bool {
+				return current_user_can( 'manage_options' );
+			},
+			'meta'                => array(
+				'annotations' => array(
+					'readonly'    => false,
+					'destructive' => true,
+					'idempotent'  => false,
+				),
+			),
+		)
+	);
+
+	// =========================================================================
+	// FILESYSTEM - Delete Directory
+	// =========================================================================
+	wp_register_ability(
+		'filesystem/delete-directory',
+		array(
+			'label'               => 'Delete Directory',
+			'description'         => '[FILESYSTEM] Deletes a directory. DESTRUCTIVE. Recursive delete optional.',
+			'category'            => 'site',
+			'input_schema'        => array(
+				'type'                 => 'object',
+				'required'             => array( 'path' ),
+				'properties'           => array(
+					'path'      => array(
+						'type'        => 'string',
+						'description' => 'Directory path to delete.',
+					),
+					'recursive' => array(
+						'type'        => 'boolean',
+						'default'     => false,
+						'description' => 'Delete recursively (default false).',
+					),
+					'context'   => array(
+						'type'        => 'string',
+						'description' => 'Brief description of why this directory is being deleted.',
+					),
+				),
+				'additionalProperties' => false,
+			),
+			'output_schema'       => array(
+				'type'       => 'object',
+				'properties' => array(
+					'success' => array( 'type' => 'boolean' ),
+					'message' => array( 'type' => 'string' ),
+				),
+			),
+			'execute_callback'    => function ( array $input ) use ( $mcp_log_filesystem_operation, $mcp_is_path_in_wp_root ): array {
+				$path      = $input['path'] ?? '';
+				$recursive = ! empty( $input['recursive'] );
+				$context   = $input['context'] ?? '';
+
+				if ( empty( $path ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Path is required.',
+					);
+				}
+
+				if ( strpos( $path, '/' ) !== 0 ) {
+					$full_path = ABSPATH . $path;
+				} else {
+					$full_path = $path;
+				}
+
+				$full_path = realpath( $full_path );
+
+				if ( false === $full_path || ! file_exists( $full_path ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Directory not found.',
+					);
+				}
+
+				if ( ! $mcp_is_path_in_wp_root( $full_path ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Access denied. Directory must be within the WordPress root directory.',
+					);
+				}
+
+				if ( ! is_dir( $full_path ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Path is not a directory.',
+					);
+				}
+
+				if ( strpos( $full_path, ABSPATH . 'wp-includes/' ) === 0 ||
+					strpos( $full_path, ABSPATH . 'wp-admin/' ) === 0 ) {
+					return array(
+						'success' => false,
+						'message' => 'Cannot delete WordPress core directories.',
+					);
+				}
+
+				global $wp_filesystem;
+				if ( ! function_exists( 'WP_Filesystem' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/file.php';
+				}
+				WP_Filesystem();
+
+				$deleted = $wp_filesystem->delete( $full_path, $recursive, 'd' );
+				if ( ! $deleted ) {
+					return array(
+						'success' => false,
+						'message' => 'Failed to delete directory.',
+					);
+				}
+
+				$mcp_log_filesystem_operation( 'delete-directory', $full_path, $context );
+
+				return array(
+					'success' => true,
+					'message' => 'Directory deleted successfully.',
+				);
 			},
 			'permission_callback' => function (): bool {
 				return current_user_can( 'manage_options' );

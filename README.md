@@ -6,7 +6,7 @@ Secure file operations for WordPress via MCP.
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 
 **Tested up to:** 6.9
-**Stable tag:** 1.0.2
+**Stable tag:** 1.0.3
 **License:** GPLv2 or later
 **License URI:** https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -107,6 +107,9 @@ This plugin includes extensive security hardening:
 - **50+ Attack Vectors Tested** - Comprehensive security testing
 
 ## Changelog
+
+### 1.0.3
+- Improve log append efficiency for filesystem operations
 
 ### 1.0.2
 - Security: Restrict filesystem operations to the WordPress root directory
