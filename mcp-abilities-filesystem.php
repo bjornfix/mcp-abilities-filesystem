@@ -3,7 +3,7 @@
  * Plugin Name: MCP Abilities - Filesystem
  * Plugin URI: https://github.com/bjornfix/mcp-abilities-filesystem
  * Description: Filesystem abilities for MCP. Read, write, copy, move, and delete files within WordPress. Security-hardened with PHP injection detection.
- * Version: 1.0.4
+ * Version: 1.0.5
  * Author: Devenia
  * Author URI: https://devenia.com
  * License: GPL-2.0+
@@ -167,18 +167,20 @@ function mcp_register_filesystem_abilities(): void {
 		}
 		$entry .= "\n";
 
-		// Append to log file (create if doesn't exist).
-		$append_result = @file_put_contents( $log_file, $entry, FILE_APPEND | LOCK_EX );
-		if ( false === $append_result ) {
+			// Append to log file (create if it doesn't exist) via WP_Filesystem only.
 			global $wp_filesystem;
 			if ( ! function_exists( 'WP_Filesystem' ) ) {
 				require_once ABSPATH . 'wp-admin/includes/file.php';
 			}
 			WP_Filesystem();
 
-			$existing_log = $wp_filesystem->exists( $log_file ) ? $wp_filesystem->get_contents( $log_file ) : '';
-			$wp_filesystem->put_contents( $log_file, $existing_log . $entry, FS_CHMOD_FILE );
-		}
+			if ( is_object( $wp_filesystem ) ) {
+				$existing_log = $wp_filesystem->exists( $log_file ) ? $wp_filesystem->get_contents( $log_file ) : '';
+				if ( false === $existing_log ) {
+					$existing_log = '';
+				}
+				$wp_filesystem->put_contents( $log_file, $existing_log . $entry, FS_CHMOD_FILE );
+			}
 
 		// Cleanup old backups occasionally (1 in 10 chance to avoid overhead).
 		if ( wp_rand( 1, 10 ) === 1 ) {
@@ -358,10 +360,47 @@ function mcp_register_filesystem_abilities(): void {
 	 * @param string $path Absolute path to validate.
 	 * @return bool True if inside WordPress root.
 	 */
-	$mcp_is_path_in_wp_root = function ( string $path ) use ( $mcp_get_wp_root ): bool {
-		$path = wp_normalize_path( $path );
-		return strpos( $path, $mcp_get_wp_root() ) === 0;
-	};
+		$mcp_is_path_in_wp_root = function ( string $path ) use ( $mcp_get_wp_root ): bool {
+			$path = wp_normalize_path( $path );
+			return strpos( $path, $mcp_get_wp_root() ) === 0;
+		};
+
+		/**
+		 * Block reads of sensitive config/secret files.
+		 *
+		 * @param string $full_path Absolute normalized path.
+		 * @return bool
+		 */
+		$mcp_is_sensitive_read_path = function ( string $full_path ): bool {
+			$normalized = strtolower( wp_normalize_path( $full_path ) );
+			$basename   = basename( $normalized );
+
+			$blocked_exact = array(
+				strtolower( wp_normalize_path( ABSPATH . 'wp-config.php' ) ),
+			);
+			if ( in_array( $normalized, $blocked_exact, true ) ) {
+				return true;
+			}
+
+			$blocked_names = array(
+				'.env',
+				'.env.local',
+				'.env.production',
+				'.env.development',
+				'id_rsa',
+				'id_dsa',
+				'authorized_keys',
+			);
+			if ( in_array( $basename, $blocked_names, true ) ) {
+				return true;
+			}
+
+			if ( preg_match( '/\.(key|pem|p12|pfx|crt)$/i', $basename ) ) {
+				return true;
+			}
+
+			return false;
+		};
 
 	// =========================================================================
 	// FILESYSTEM - Get Changelog
@@ -449,11 +488,18 @@ function mcp_register_filesystem_abilities(): void {
 			'input_schema'        => array(
 				'type'                 => 'object',
 				'properties'           => array(
-					'path' => array(
-						'type'        => 'string',
-						'description' => 'File path (absolute or relative to WordPress root).',
+						'path' => array(
+							'type'        => 'string',
+							'description' => 'File path (absolute or relative to WordPress root).',
+						),
+						'max_bytes' => array(
+							'type'        => 'integer',
+							'default'     => 262144,
+							'minimum'     => 1,
+							'maximum'     => 1048576,
+							'description' => 'Maximum allowed file size to read (default 256KB, max 1MB).',
+						),
 					),
-				),
 				'required'             => array( 'path' ),
 				'additionalProperties' => false,
 			),
@@ -468,8 +514,8 @@ function mcp_register_filesystem_abilities(): void {
 					'message'  => array( 'type' => 'string' ),
 				),
 			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
-				$path = $input['path'] ?? '';
+				'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root, $mcp_is_sensitive_read_path ): array {
+					$path = $input['path'] ?? '';
 
 				if ( empty( $path ) ) {
 					return array(
@@ -500,12 +546,35 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				if ( ! is_file( $full_path ) ) {
-					return array(
-						'success' => false,
-						'message' => 'Path is not a file: ' . $input['path'],
-					);
-				}
+					if ( ! is_file( $full_path ) ) {
+						return array(
+							'success' => false,
+							'message' => 'Path is not a file: ' . $input['path'],
+						);
+					}
+
+					if ( $mcp_is_sensitive_read_path( $full_path ) ) {
+						return array(
+							'success' => false,
+							'message' => 'Access denied for sensitive file path.',
+						);
+					}
+
+					$file_size = filesize( $full_path );
+					if ( false === $file_size ) {
+						return array(
+							'success' => false,
+							'message' => 'Failed to stat file size: ' . $input['path'],
+						);
+					}
+					$max_bytes = isset( $input['max_bytes'] ) ? (int) $input['max_bytes'] : 262144;
+					$max_bytes = max( 1, min( 1048576, $max_bytes ) );
+					if ( $file_size > $max_bytes ) {
+						return array(
+							'success' => false,
+							'message' => "File is too large to read safely ({$file_size} bytes). Increase max_bytes up to 1048576 if needed.",
+						);
+					}
 
 				// Initialize WP_Filesystem.
 				global $wp_filesystem;
@@ -530,14 +599,14 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				return array(
-					'success'  => true,
-					'content'  => $content,
-					'path'     => $full_path,
-					'size'     => filesize( $full_path ),
-					'modified' => gmdate( 'Y-m-d H:i:s', filemtime( $full_path ) ),
-				);
-			},
+					return array(
+						'success'  => true,
+						'content'  => $content,
+						'path'     => $full_path,
+						'size'     => $file_size,
+						'modified' => gmdate( 'Y-m-d H:i:s', filemtime( $full_path ) ),
+					);
+				},
 			'permission_callback' => function (): bool {
 				return current_user_can( 'manage_options' );
 			},
@@ -907,11 +976,18 @@ function mcp_register_filesystem_abilities(): void {
 						'type'        => 'integer',
 						'description' => 'Max recursion depth when recursive is true (default 2, max 8).',
 					),
-					'pattern'   => array(
-						'type'        => 'string',
-						'description' => 'Filter files by pattern (e.g., "*.php", "*.js").',
+						'pattern'   => array(
+							'type'        => 'string',
+							'description' => 'Filter files by pattern (e.g., "*.php", "*.js").',
+						),
+						'max_items' => array(
+							'type'        => 'integer',
+							'default'     => 1000,
+							'minimum'     => 1,
+							'maximum'     => 5000,
+							'description' => 'Maximum number of items to return before truncating.',
+						),
 					),
-				),
 				'required'             => array(),
 				'additionalProperties' => false,
 			),
@@ -933,15 +1009,19 @@ function mcp_register_filesystem_abilities(): void {
 							),
 						),
 					),
-					'message' => array( 'type' => 'string' ),
+						'message' => array( 'type' => 'string' ),
+						'returned' => array( 'type' => 'integer' ),
+						'truncated' => array( 'type' => 'boolean' ),
+					),
 				),
-			),
-			'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
-				$path      = $input['path'] ?? '.';
-				$recursive = $input['recursive'] ?? false;
-				$pattern   = $input['pattern'] ?? null;
-				$max_depth = isset( $input['max_depth'] ) ? (int) $input['max_depth'] : 2;
-				$max_depth = max( 1, min( 8, $max_depth ) );
+				'execute_callback'    => function ( array $input ) use ( $mcp_is_path_in_wp_root ): array {
+					$path      = $input['path'] ?? '.';
+					$recursive = $input['recursive'] ?? false;
+					$pattern   = $input['pattern'] ?? null;
+					$max_depth = isset( $input['max_depth'] ) ? (int) $input['max_depth'] : 2;
+					$max_depth = max( 1, min( 8, $max_depth ) );
+					$max_items = isset( $input['max_items'] ) ? (int) $input['max_items'] : 1000;
+					$max_items = max( 1, min( 5000, $max_items ) );
 
 				if ( '.' === $path || empty( $path ) ) {
 					$full_path = ABSPATH;
@@ -974,18 +1054,24 @@ function mcp_register_filesystem_abilities(): void {
 					);
 				}
 
-				$items = array();
+					$items = array();
+					$truncated = false;
 
-				$list_dir = function ( $dir, $depth = 0 ) use ( &$list_dir, &$items, $recursive, $pattern, $max_depth ) {
-					if ( $depth > $max_depth ) {
-						return;
-					}
+					$list_dir = function ( $dir, $depth = 0 ) use ( &$list_dir, &$items, &$truncated, $recursive, $pattern, $max_depth, $max_items ) {
+						if ( $depth > $max_depth ) {
+							return;
+						}
 
 					$files = scandir( $dir );
-					foreach ( $files as $file ) {
-						if ( '.' === $file || '..' === $file ) {
-							continue;
-						}
+						foreach ( $files as $file ) {
+							if ( count( $items ) >= $max_items ) {
+								$truncated = true;
+								return;
+							}
+
+							if ( '.' === $file || '..' === $file ) {
+								continue;
+							}
 
 						$file_path = $dir . '/' . $file;
 
@@ -1002,20 +1088,26 @@ function mcp_register_filesystem_abilities(): void {
 							'path'     => $file_path,
 						);
 
-						if ( $recursive && $is_dir ) {
-							$list_dir( $file_path, $depth + 1 );
+							if ( $recursive && $is_dir ) {
+								$list_dir( $file_path, $depth + 1 );
+								if ( $truncated ) {
+									return;
+								}
+							}
 						}
-					}
-				};
+					};
 
 				$list_dir( $full_path );
 
-				return array(
-					'success' => true,
-					'path'    => $full_path,
-					'items'   => $items,
-				);
-			},
+					return array(
+						'success'   => true,
+						'path'      => $full_path,
+						'items'     => $items,
+						'returned'  => count( $items ),
+						'truncated' => $truncated,
+						'message'   => $truncated ? 'Result truncated at max_items limit.' : 'Directory listed successfully.',
+					);
+				},
 			'permission_callback' => function (): bool {
 				return current_user_can( 'manage_options' );
 			},

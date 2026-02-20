@@ -6,7 +6,7 @@ Secure file operations for WordPress via MCP.
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 
 **Tested up to:** 6.9
-**Stable tag:** 1.0.3
+**Stable tag:** 1.0.5
 **License:** GPLv2 or later
 **License URI:** https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -30,7 +30,7 @@ This add-on plugin exposes filesystem operations through MCP (Model Context Prot
 3. Upload via WordPress Admin → Plugins → Add New → Upload Plugin
 4. Activate the plugin
 
-## Abilities (10)
+## Abilities (11)
 
 | Ability | Description |
 |---------|-------------|
@@ -38,6 +38,7 @@ This add-on plugin exposes filesystem operations through MCP (Model Context Prot
 | `filesystem/write-file` | Write content to file (PHP blocked) |
 | `filesystem/append-file` | Append content to existing file |
 | `filesystem/delete-file` | Delete file (creates backup first) |
+| `filesystem/delete-directory` | Delete directory (optional recursive delete) |
 | `filesystem/copy-file` | Copy file to new location |
 | `filesystem/move-file` | Move or rename file |
 | `filesystem/list-directory` | List directory contents |
@@ -107,6 +108,10 @@ This plugin includes extensive security hardening:
 - **50+ Attack Vectors Tested** - Comprehensive security testing
 
 ## Changelog
+
+### 1.0.5
+- Added: `max_items` limit for safer recursive directory listing
+- Added: `returned` and `truncated` output fields for list-directory
 
 ### 1.0.3
 - Improve log append efficiency for filesystem operations
