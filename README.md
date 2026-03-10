@@ -6,7 +6,7 @@ Secure file operations for WordPress via MCP.
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 
 **Tested up to:** 6.9
-**Stable tag:** 1.0.5
+**Stable tag:** 1.0.6
 **License:** GPLv2 or later
 **License URI:** https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -108,6 +108,9 @@ This plugin includes extensive security hardening:
 - **50+ Attack Vectors Tested** - Comprehensive security testing
 
 ## Changelog
+
+### 1.0.6
+- Docs: expanded the WordPress-standard `readme.txt` so the published ZIP now includes fuller requirements, abilities, use cases, and Devenia ecosystem links
 
 ### 1.0.5
 - Added: `max_items` limit for safer recursive directory listing
